@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>nose polygon test</title>
+<style>
+  body { margin:0; background:#111; color:#eee; font:13px/1.5 Consolas,monospace; }
+  #bar { padding:10px 12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  #bar span { color:#8b949e; }
+  #stage { position:relative; display:inline-block; margin:0 12px; }
+  #img, #cv { display:block; max-width:640px; }
+  #cv { position:absolute; left:0; top:0; }
+  #log { padding:8px 12px; white-space:pre-wrap; }
+  body[data-empty="1"] #stage { opacity:.35; }
+</style>
+</head>
+<body data-empty="1">
+<div id="bar">
+  <input type="file" id="file" accept="image/*">
+  <span id="hint">挑一张有正脸的照片（不会上传，只在本地解码）</span>
+</div>
+<div id="stage">
+  <img id="img" crossorigin="anonymous">
+  <canvas id="cv"></canvas>
+</div>
+<div id="log">waiting…</div>
+<script type="module">
+import { FilesetResolver, FaceLandmarker } from '../vendor/vision_bundle.mjs';
+
+const NOSE_IDS = [1, 2, 4, 5, 6, 98, 102, 129, 327, 331, 358];
+const logEl = document.getElementById('log');
+const state = { status: 'init', landmarks: 0, poly: null, err: null, ms: 0 };
+window.__TEST__ = state;
+
+function buildNosePoly(lm, W, H, expand) {
+  const ids = lm.length > 400 ? NOSE_IDS : [1, 129, 358];
+  const pts = [];
+  for (const i of ids) { const p = lm[i]; if (p) pts.push({ x: p.x * W, y: p.y * H }); }
+  let cx = 0, cy = 0;
+  for (const p of pts) { cx += p.x; cy += p.y; }
+  cx /= pts.length; cy /= pts.length;
+  const sorted = pts.slice().sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
+  const poly = sorted.map((p) => ({ x: cx + (p.x - cx) * expand, y: cy + (p.y - cy) * expand }));
+  return { poly, cx, cy, sortedCount: sorted.length };
+}
+
+const img = document.getElementById('img');
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+let faceLM = null;
+async function getModel() {
+  if (faceLM) return faceLM;
+  const vision = await FilesetResolver.forVisionTasks('../vendor/wasm');
+  state.wasm = 'ok';
+  faceLM = await FaceLandmarker.createFromOptions(vision, {
+    baseOptions: { modelAssetPath: '../vendor/models/face_landmarker.task', delegate: 'CPU' },
+    runningMode: 'IMAGE',
+    numFaces: 1,
+  });
+  state.model = 'ok';
+  return faceLM;
+}
+
+async function waitImg(src) {
+  if (img.src === src) return;
+  await new Promise((res, rej) => {
+    img.onload = () => res();
+    img.onerror = () => rej(new Error('图片加载失败'));
+    img.src = src;
+  });
+}
+
+async function analyze(src) {
+  state.status = 'loading'; state.err = null; state.poly = null;
+  logEl.textContent = 'loading model…';
+  try {
+    await waitImg(src);
+    document.body.dataset.empty = '0';
+    const W = img.naturalWidth, H = img.naturalHeight;
+    cv.width = W; cv.height = H;
+    cv.style.width = img.clientWidth + 'px';
+    cv.style.height = img.clientHeight + 'px';
+
+    const t0 = performance.now();
+    const face = await getModel();
+    const res = face.detect(img);
+    state.ms = Math.round(performance.now() - t0);
+    const lm = res.faceLandmarks && res.faceLandmarks[0];
+    state.landmarks = lm ? lm.length : 0;
+
+    if (!lm) { state.status = 'no-face'; }
+    else {
+      const r = buildNosePoly(lm, W, H, 1.2);
+      state.poly = r.poly.map((p) => [Math.round(p.x), Math.round(p.y)]);
+      state.noseTip = [Math.round(lm[1].x * W), Math.round(lm[1].y * H)];
+      state.alarL = [Math.round(lm[129].x * W), Math.round(lm[129].y * H)];
+      state.alarR = [Math.round(lm[358].x * W), Math.round(lm[358].y * H)];
+
+      ctx.drawImage(img, 0, 0);
+      for (const i of NOSE_IDS) {
+        const p = lm[i];
+        ctx.beginPath();
+        ctx.arc(p.x * W, p.y * H, 3, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,220,0,.95)'; ctx.fill();
+      }
+      ctx.beginPath();
+      state.poly.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.closePath();
+      ctx.strokeStyle = '#4ea1ff'; ctx.lineWidth = 3; ctx.stroke();
+      ctx.fillStyle = 'rgba(78,161,255,.22)'; ctx.fill();
+      state.status = 'drawn';
+    }
+  } catch (e) {
+    state.err = String((e && e.message) || e);
+    state.status = 'error';
+  }
+
+  logEl.textContent = 'STATUS=' + state.status + ' | landmarks=' + state.landmarks +
+    ' | ms=' + state.ms + ' | err=' + state.err + '\n' +
+    'noseTip=' + JSON.stringify(state.noseTip) + ' alarL=' + JSON.stringify(state.alarL) + ' alarR=' + JSON.stringify(state.alarR) + '\n' +
+    'poly=' + JSON.stringify(state.poly);
+  document.title = 'TEST:' + state.status;
+}
+
+const fileEl = document.getElementById('file');
+fileEl.onchange = () => {
+  const f = fileEl.files && fileEl.files[0];
+  if (f) analyze(URL.createObjectURL(f));
+};
+logEl.textContent = 'waiting…（选一张照片，或者用 ?src=图片地址）';
+
+const q = new URLSearchParams(location.search).get('src');
+if (q) analyze(q);
+</script>
+</body>
+</html>

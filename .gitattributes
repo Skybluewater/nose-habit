@@ -1,0 +1,11 @@
+* text=auto eol=lf
+
+# Windows 批处理要和 cmd 一起活着，保持 CRLF
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制：一律不要碰
+*.wasm binary
+*.task binary
+*.jpg binary
+*.png binary

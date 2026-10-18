@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e1116">
+<title>鼻部习惯检测器</title>
+<link rel="icon" href="data:,">
+<style>
+  :root{
+    --bg:#0e1116; --card:#161b22; --card2:#1b2129; --line:#242c36;
+    --fg:#e6edf3; --dim:#8b98a5; --dim2:#5f6b78;
+    --accent:#4ea1ff; --ok:#3fb950; --warn:#ffb020; --danger:#ff5c5c;
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--fg);
+    font:15px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    padding:0 0 40px;
+  }
+  /* ---------- 边框闪光 ---------- */
+  #flash{
+    position:fixed; inset:0; pointer-events:none; z-index:900;
+    opacity:0; transition:opacity .45s ease;
+    box-shadow:inset 0 0 0 0 transparent;
+  }
+  #flash.on{ opacity:1; transition:opacity .06s ease; box-shadow:inset 0 0 90px 12px var(--accent); }
+  #flash.on.long{ box-shadow:inset 0 0 90px 14px var(--warn); }
+
+  /* ---------- 顶栏 ---------- */
+  .topbar{
+    position:sticky; top:0; z-index:20;
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:14px 20px; background:rgba(14,17,22,.88); backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line);
+  }
+  .brand{font-weight:650; letter-spacing:.3px; font-size:15px}
+  .brand span{color:var(--dim2); font-weight:400; margin-left:8px; font-size:12px}
+  .tabs{display:flex; gap:4px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:4px}
+  .tab{
+    appearance:none; border:0; background:transparent; color:var(--dim);
+    padding:7px 14px; border-radius:7px; font-size:13.5px; cursor:pointer; font-family:inherit;
+  }
+  .tab:hover{color:var(--fg)}
+  .tab.active{background:var(--card2); color:var(--fg); box-shadow:0 1px 0 rgba(255,255,255,.04) inset}
+  .spacer{flex:1}
+  .pill{
+    display:flex; align-items:center; gap:7px; font-size:12.5px; color:var(--dim);
+    background:var(--card); border:1px solid var(--line); padding:6px 12px; border-radius:999px; white-space:nowrap;
+  }
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--dim2);flex:none}
+  .pill.run .dot{background:var(--ok); box-shadow:0 0 8px var(--ok)}
+  .pill.pause .dot{background:var(--warn)}
+  .pill.err .dot{background:var(--danger)}
+
+  /* ---------- 布局 ---------- */
+  .wrap{max-width:1080px; margin:0 auto; padding:20px}
+  .panel{display:none}
+  .panel.active{display:block}
+  .grid{display:grid; gap:16px; grid-template-columns:minmax(0,1.15fr) minmax(0,1fr)}
+  @media (max-width:860px){ .grid{grid-template-columns:1fr} }
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+    padding:16px;
+  }
+  .card h3{margin:0 0 12px; font-size:12px; font-weight:600; letter-spacing:.8px; text-transform:uppercase; color:var(--dim)}
+
+  /* ---------- 预览 ---------- */
+  #previewWrap{position:relative; width:100%; aspect-ratio:4/3; background:#000; border-radius:10px; overflow:hidden}
+  #previewWrap.hidden{display:none}
+  #video{width:100%; height:100%; object-fit:cover; display:block; transform:scaleX(-1)}
+  #overlay{position:absolute; inset:0; width:100%; height:100%; pointer-events:none; transform:scaleX(-1)}
+  #previewNote{
+    position:absolute; left:0; right:0; bottom:0; padding:6px 10px; font-size:11.5px; color:var(--dim);
+    background:linear-gradient(transparent, rgba(0,0,0,.72));
+  }
+
+  /* ---------- 数字 ---------- */
+  .bigrow{display:flex; align-items:flex-end; gap:22px; flex-wrap:wrap}
+  .metric .n{font-size:46px; font-weight:300; line-height:1; letter-spacing:-1px; font-variant-numeric:tabular-nums}
+  .metric .l{font-size:12px; color:var(--dim); margin-top:6px}
+  .metric.small .n{font-size:26px}
+
+  /* ---------- 控件 ---------- */
+  .row{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+  .row + .row{margin-top:12px}
+  button.btn{
+    appearance:none; font-family:inherit; cursor:pointer; font-size:13.5px;
+    padding:9px 16px; border-radius:9px; border:1px solid var(--line);
+    background:var(--card2); color:var(--fg); transition:.15s;
+  }
+  button.btn:hover{border-color:#39434f; background:#212934}
+  button.btn:disabled{opacity:.45; cursor:default}
+  button.btn.primary{background:var(--accent); border-color:var(--accent); color:#04101f; font-weight:600}
+  button.btn.primary:hover{background:#6cb2ff; border-color:#6cb2ff}
+  button.btn.ghost{background:transparent}
+  button.btn.danger{color:var(--danger); border-color:#3b2226}
+  button.btn.danger:hover{background:#2a1518; border-color:#5a2a30}
+  select,input[type=number],input[type=text]{
+    font-family:inherit; font-size:13.5px; color:var(--fg); background:var(--card2);
+    border:1px solid var(--line); border-radius:8px; padding:8px 10px;
+  }
+  input[type=number]{width:78px}
+  label.chk{display:flex; align-items:center; gap:7px; font-size:13.5px; color:var(--dim); cursor:pointer; user-select:none}
+  input[type=checkbox]{accent-color:var(--accent); width:15px; height:15px}
+  .hint{font-size:12px; color:var(--dim2); margin-top:10px; line-height:1.6}
+.hint.ok{color:#5fd08a}
+.hint.bad{color:#ff8a8a}
+input[type=text]{background:#151a1f; border:1px solid var(--line); color:inherit; font:inherit; font-size:13px; padding:7px 10px; border-radius:8px}
+
+  /* ---------- 诊断 ---------- */
+  .diag{display:grid; grid-template-columns:1fr 1fr; gap:8px 14px; font-size:12.5px; font-variant-numeric:tabular-nums}
+  .diag div{display:flex; justify-content:space-between; gap:8px; color:var(--dim); padding:3px 0; border-bottom:1px dashed #1e242c}
+  .diag b{color:var(--fg); font-weight:500}
+
+  /* ---------- 图表 ---------- */
+  .chart{display:flex; align-items:flex-end; gap:3px; height:110px; margin-top:6px}
+  .chart .b{flex:1; background:#22303e; border-radius:3px 3px 0 0; min-height:2px; position:relative; transition:background .2s}
+  .chart .b.has{background:var(--accent)}
+  .chart .b.tall{background:var(--warn)}
+  .chart .b:hover{background:#6cb2ff}
+  .axis{display:flex; justify-content:space-between; font-size:11px; color:var(--dim2); margin-top:6px}
+  .chart.wide{height:90px; gap:8px}
+  .chart.wide .b{border-radius:4px 4px 0 0}
+  .daylabels{display:flex; gap:8px; margin-top:6px; font-size:11px; color:var(--dim2)}
+  .daylabels span{flex:1; text-align:center}
+
+  /* ---------- 打卡 ---------- */
+  #ciCard{
+    background:linear-gradient(160deg,#1a2430,#141a21); border:1px solid var(--line);
+    border-radius:var(--radius); padding:26px; text-align:center;
+  }
+  #ciCard .q{font-size:19px; margin-bottom:18px}
+  #ciCard .btns{display:flex; gap:12px; justify-content:center; flex-wrap:wrap}
+  #ciCard .btns button{flex:1; min-width:130px; padding:16px 12px; font-size:15px}
+  #ciIdle{color:var(--dim); font-size:13.5px}
+  .log{margin-top:14px; max-height:210px; overflow:auto; font-size:12.5px}
+  .log div{display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px solid #1c232b; color:var(--dim)}
+  .log div b{color:var(--fg); font-weight:500}
+
+  #toast{
+    position:fixed; left:50%; bottom:26px; transform:translate(-50%,20px);
+    background:#202832; border:1px solid var(--line); color:var(--fg);
+    padding:10px 18px; border-radius:10px; font-size:13.5px; opacity:0;
+    transition:.22s; pointer-events:none; z-index:950; box-shadow:0 8px 24px rgba(0,0,0,.4);
+  }
+  #toast.on{opacity:1; transform:translate(-50%,0)}
+  .kbd{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:#1c232b; padding:1px 6px; border-radius:5px; border:1px solid var(--line)}
+</style>
+</head>
+<body>
+
+<div id="flash"></div>
+
+<div class="topbar">
+  <div class="brand">鼻部习惯检测器<span>完全离线 · 画面不出本机</span></div>
+  <div class="tabs">
+    <button class="tab active" data-panel="detect">桌面检测</button>
+    <button class="tab" data-panel="checkin">随身打卡</button>
+    <button class="tab" data-panel="stats">统计</button>
+  </div>
+  <div class="spacer"></div>
+  <div class="pill" id="statusPill"><i class="dot"></i><span id="statusText">未启动</span></div>
+</div>
+
+<div class="wrap">
+
+  <!-- ============ 检测 ============ -->
+  <section class="panel active" id="panelDetect">
+    <div class="grid">
+      <div>
+        <div class="card">
+          <h3>摄像头</h3>
+          <div id="previewWrap">
+            <video id="video" playsinline muted autoplay></video>
+            <canvas id="overlay"></canvas>
+            <div id="previewNote">画面仅在内存中处理，不录制、不上传、不落盘</div>
+          </div>
+          <div id="camError" class="hint" style="color:var(--danger); display:none"></div>
+          <div class="row" style="margin-top:14px">
+            <button class="btn primary" id="btnStart">启动检测</button>
+            <button class="btn" id="btnStop" disabled>停止</button>
+            <button class="btn ghost" id="btnPause" disabled>暂停 30 分钟</button>
+          </div>
+          <div class="row">
+            <label class="chk">强度
+              <select id="tierSel">
+                <option value="saver">省电（2fps 哨兵）</option>
+                <option value="balance" selected>平衡（5fps）</option>
+                <option value="sensitive">灵敏（10fps）</option>
+              </select>
+            </label>
+            <label class="chk"><input type="checkbox" id="chkSound" checked> 提示音</label>
+            <label class="chk"><input type="checkbox" id="chkPreview" checked> 显示预览</label>
+            <label class="chk"><input type="checkbox" id="chkIdle" checked> 闲置自动停</label>
+            <label class="chk"><input type="checkbox" id="chkBg" checked> 切到别的窗口也继续</label>
+            <label class="chk"><input type="checkbox" id="chkDebug"> 调试标注</label>
+          </div>
+          <div class="hint">
+            浏览器只允许 <span class="kbd">127.0.0.1</span> 或 https 使用摄像头 —— 所以要用 start.bat 打开，别直接双击 index.html。
+          </div>
+          <div class="hint" id="bgHint">
+            后台检测时浏览器会把帧率限到 ~1 帧/秒（长时间动作能抓，一两秒的会漏）。要全速后台，用 <span class="kbd">start.bat</span> 打开的专用窗口——它带了关掉限速的启动参数。
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <h3>今天</h3>
+          <div class="bigrow">
+            <div class="metric"><div class="n" id="bigCount">0</div><div class="l">次数</div></div>
+            <div class="metric"><div class="n" id="bigTime">0s</div><div class="l">累计时长</div></div>
+            <div class="metric small"><div class="n" id="epTimer">—</div><div class="l">本次</div></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <h3>判定参数</h3>
+          <div class="row">
+            <label class="chk">记数阈值 <input type="number" id="inpDwell" min="200" max="5000" step="100" value="800"> ms</label>
+          </div>
+          <div class="row">
+            <label class="chk">结束间隔 <input type="number" id="inpExit" min="1000" max="60000" step="500" value="5000"> ms</label>
+          </div>
+          <div class="row">
+            <label class="chk">长动作提醒 <input type="number" id="inpLong" min="3000" max="120000" step="1000" value="10000"> ms</label>
+          </div>
+          <div class="row">
+            <label class="chk">鼻区扩大 <input type="number" id="inpExpand" min="0.8" max="2" step="0.05" value="1.2"> 倍</label>
+          </div>
+          <div class="hint">
+            手进入鼻区 ≥「记数阈值」记 1 次并开始计时；离开超过「结束间隔」算这次结束。
+            摸着不放只算 1 次，但时长会一直累计。
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <h3>系统提醒（切到别的窗口也看得到）</h3>
+          <div class="row">
+            <label class="chk"><input type="checkbox" id="chkToast" checked> 弹系统通知</label>
+            <label class="chk"><input type="checkbox" id="chkVoice" checked> 语音念一句</label>
+            <button class="btn ghost" id="btnTestSys" type="button">试一下</button>
+          </div>
+          <div class="hint" id="sysStatus">
+            走本机服务调 Windows 通知中心（右下角弹窗 + 提示音），不需要网页通知权限，也不受 Chrome 通知开关影响。
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <h3>微信 / 手机提醒</h3>
+          <div class="row">
+            <label class="chk">通道
+              <select id="notiProv">
+                <option value="serverchan">Server酱（推微信）</option>
+                <option value="pushplus">PushPlus（推微信）</option>
+                <option value="wxwork">企业微信群机器人</option>
+                <option value="custom">自定义 webhook</option>
+              </select>
+            </label>
+            <label class="chk"><input type="checkbox" id="notiOn"> 启用</label>
+          </div>
+          <div class="row">
+            <label class="chk" style="flex:1">Key <input type="text" id="notiKey" style="flex:1;min-width:220px" placeholder="粘贴 SendKey / token / webhook"></label>
+          </div>
+          <div class="hint" id="notiKeyHint"></div>
+          <div class="row">
+            <label class="chk"><input type="checkbox" id="notiLong" checked> 长时间提醒</label>
+            <label class="chk"><input type="checkbox" id="notiCount"> 每次记数</label>
+            <label class="chk"><input type="checkbox" id="notiCheckin"> 打卡时</label>
+            <button class="btn ghost" id="notiTest" type="button">发测试</button>
+          </div>
+          <div class="hint" id="notiStatus">这条链路走本机服务转发，key 只存本机。开着它就必需联网，想纯离线就把「启用」关掉。</div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <h3>功耗自检</h3>
+          <div class="diag">
+            <div><span>处理帧率</span><b id="dFps">—</b></div>
+            <div><span>手部单帧</span><b id="dHand">—</b></div>
+            <div><span>面部单帧</span><b id="dFace">—</b></div>
+            <div><span>加速占比</span><b id="dBoost">—</b></div>
+            <div><span>摄像头开启</span><b id="dCam">0m</b></div>
+            <div><span>占用(单核)</span><b id="dCpu">—</b></div>
+          </div>
+          <div class="hint">占用 = 累计推理耗时 ÷ 累计运行时长，是单核百分比。用它验证真实功耗，别信估算。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 打卡 ============ -->
+  <section class="panel" id="panelCheckin">
+    <div class="grid">
+      <div class="card">
+        <h3>觉察打卡</h3>
+        <div id="ciCard">
+          <div class="q" id="ciQuestion">随机间隔提醒你检查一下：手现在在哪？</div>
+          <div class="btns" id="ciBtns">
+            <button class="btn primary" id="btnOnFace">在脸上</button>
+            <button class="btn" id="btnNotFace">不在</button>
+          </div>
+          <div id="ciIdle">下一次提醒：<b id="ciNext">—</b></div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <label class="chk">间隔 <input type="number" id="ciMin" min="1" max="240" value="20"> – <input type="number" id="ciMax" min="1" max="240" value="50"> 分钟</label>
+        </div>
+        <div class="row">
+          <button class="btn" id="btnNotify">允许桌面通知</button>
+          <button class="btn ghost" id="btnCiNow">立刻问一次</button>
+        </div>
+        <div class="hint">
+          手机上把本页「添加到主屏幕」，关掉页面时 iOS 不允许网页自己定时弹通知 ——
+          用 iPhone 自带的「快捷指令 → 自动化 → 特定时间」做兜底，通知会镜像震到 Apple Watch。详见 README.md。
+        </div>
+      </div>
+      <div class="card">
+        <h3>最近打卡</h3>
+        <div class="log" id="ciLog"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 统计 ============ -->
+  <section class="panel" id="panelStats">
+    <div class="card">
+      <h3>今日概览</h3>
+      <div class="bigrow">
+        <div class="metric"><div class="n" id="sCount">0</div><div class="l">次数</div></div>
+        <div class="metric"><div class="n" id="sTotal">0m</div><div class="l">总时长</div></div>
+        <div class="metric"><div class="n" id="sMedian">—</div><div class="l">单次中位</div></div>
+        <div class="metric"><div class="n" id="sLongest">—</div><div class="l">最长无发生</div></div>
+      </div>
+    </div>
+
+    <div class="grid" style="margin-top:16px">
+      <div class="card">
+        <h3>今日每小时分布</h3>
+        <div class="chart" id="hourChart"></div>
+        <div class="axis"><span>0</span><span>6</span><span>12</span><span>18</span><span>23</span></div>
+      </div>
+      <div class="card">
+        <h3>最近 7 天</h3>
+        <div class="chart wide" id="weekChart"></div>
+        <div class="daylabels" id="weekLabels"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h3>数据</h3>
+      <div class="row">
+        <button class="btn" id="btnExport">导出 CSV</button>
+        <button class="btn ghost" id="btnExportJson">导出 JSON</button>
+        <button class="btn danger" id="btnClear">清空全部数据</button>
+      </div>
+      <div class="hint" id="dataHint">数据只存在本浏览器的 localStorage。</div>
+    </div>
+  </section>
+
+</div>
+
+<div id="toast"></div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

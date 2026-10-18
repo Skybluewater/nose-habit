@@ -1,0 +1,13 @@
+# 本地测试留下的东西，不进仓库
+test/pose.jpg
+.pi/
+temp/
+*.output
+*.log
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
