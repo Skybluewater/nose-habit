@@ -22,11 +22,15 @@ const STORE_KEY = 'noseHabit.v1';
 const DEFAULTS = {
   tier: 'balance', dwell: 800, exitGap: 5000, longWarn: 10000, expand: 1.2,
   sound: true, preview: true, debug: false, idlePause: true, bgKeep: true,
+  autoLow: true, awayStop: false,
   toastOn: true, voiceOn: true,
   ciMin: 20, ciMax: 50,
   notify: { on: false, provider: 'serverchan', key: '', url: '', onCount: false, onLong: true, onCheckin: false },
 };
-const IDLE_MS = 5 * 60 * 1000;   // 键鼠闲置多久自动停摄像头
+const IDLE_MS = 5 * 60 * 1000;        // 页面在前台时：页内键鼠闲置多久自动停（后台不算，后台就该一直检测）
+const AWAY_MS = 10 * 60 * 1000;        // 「离开电脑就停」用：整台机器键鼠闲置多久才停
+const NOBODY_MS = 2 * 60 * 1000;       // 镜头里连续多久没人 → 自动降省电档
+const IDLE_POLL_MS = 10000;            // 多久问一次系统真实闲置时长
 
 const db = { settings: { ...DEFAULTS }, episodes: [], checkins: [] };
 
@@ -120,13 +124,14 @@ const overlay = $('overlay');
 const octx = overlay.getContext('2d');
 
 let handLM = null, faceLM = null, modelsReady = false, modelPromise = null;
-let running = false, stream = null, rafId = 0;
+let running = false, stream = null, rafId = 0, idleTimer = 0;
+let lowByAway = false;   // 当前是否因为“镜头里没人”而降到了省电档
 let autoStoppedBy = null;      // 'hidden' | 'idle' | 'pause30'
 let pauseUntil = 0;
 
 let nose = null;               // {poly, cx, cy}
 let noseAt = 0;
-let lastFaceAt = 0, lastHandAt = 0, lastHandSeenAt = 0;
+let lastFaceAt = 0, lastHandAt = 0, lastHandSeenAt = 0, lastFaceSeen = 0;
 let lastHandRes = null;
 let ep = null;                 // 当前"一段"摸鼻
 
@@ -234,6 +239,8 @@ async function start() {
     autoStoppedBy = null;
     pauseUntil = 0;
     lastHandAt = 0; lastFaceAt = 0; lastHandSeenAt = 0;
+    lastFaceSeen = performance.now();   // 刚启动给 2 分钟宽限，不要一开就跳省电档
+    lowByAway = false;
     nose = null; noseAt = 0;
     perf.detectSince = performance.now();
     perf.camOnSince = performance.now();
@@ -244,6 +251,9 @@ async function start() {
     setStatus('哨兵中', 'run');
     clearTimeout(loopTimer);
     scheduleLoop();
+    clearInterval(idleTimer);
+    pollSysIdle();
+    idleTimer = setInterval(pollSysIdle, IDLE_POLL_MS);
   } catch (err) {
     console.error(err);
     showCamError(err);
@@ -265,6 +275,7 @@ function stop(reason) {
   running = false;
   cancelAnimationFrame(rafId);
   clearTimeout(loopTimer);
+  clearInterval(idleTimer); idleTimer = 0;
   stopTracks();
   const now = performance.now();
   if (perf.camOnSince) { perf.camOnAcc += now - perf.camOnSince; perf.camOnSince = 0; }
@@ -298,7 +309,8 @@ function loop() {
 
   const now = performance.now();
   const S = db.settings;
-  const T = TIERS[S.tier] || TIERS.balance;
+  // 镜头里没人 → 降到省电档（不是停摄像头，否则你回来时它已经关了）
+  const T = TIERS[S.autoLow && lowByAway ? 'saver' : S.tier] || TIERS.balance;
 
   // 一段结束判定
   if (ep && now - ep.lastSeen > S.exitGap) finalizeEpisode();
@@ -329,6 +341,7 @@ function runFace(now) {
 
   const lm = res && res.faceLandmarks && res.faceLandmarks[0];
   if (lm) {
+    lastFaceSeen = now;
     nose = buildNosePoly(lm, video.videoWidth, video.videoHeight, db.settings.expand);
     noseAt = now;
   } else {
@@ -833,6 +846,24 @@ function refreshDiag() {
 let lastActivity = Date.now();
 function markActivity() { lastActivity = Date.now(); }
 
+// 系统级闲置时长（整台机器的键盘鼠标，不是本页收到的事件）。
+// 关键：页面在后台时收不到 mousemove，用页内事件算闲会把“切到别的窗口干活”误判成“人走了” → 五分钟就关摄像头。
+let sysIdle = { ms: -1, at: 0, ok: false };
+async function pollSysIdle() {
+  try {
+    const r = await fetch('/api/idle', { cache: 'no-store' });
+    if (!r.ok) throw new Error('http ' + r.status);
+    const j = await r.json();
+    const v = j && Number(j.idleMs);
+    if (j && j.ok && Number.isFinite(v) && v >= 0) { sysIdle = { ms: v, at: Date.now(), ok: true }; }
+    else sysIdle.ok = false;
+  } catch (e) { sysIdle.ok = false; }
+}
+function effIdleMs() {
+  if (sysIdle.ok && Date.now() - sysIdle.at < 3 * IDLE_POLL_MS) return sysIdle.ms + (Date.now() - sysIdle.at);
+  return Date.now() - lastActivity;   // 服务不可用时退回页内事件
+}
+
 function bind() {
   bindNotify();
   bindSys();
@@ -884,6 +915,8 @@ function bind() {
   chk('chkPreview', 'preview', (on) => { $('previewWrap').classList.toggle('hidden', !on); });
   chk('chkDebug', 'debug', () => { if (!db.settings.debug) octx.clearRect(0, 0, overlay.width, overlay.height); });
   chk('chkIdle', 'idlePause');
+  chk('chkAutoLow', 'autoLow');
+  chk('chkAway', 'awayStop');
   chk('chkBg', 'bgKeep', () => {
     $('chkBg') && ($('chkBg').checked = db.settings.bgKeep);
     if (!db.settings.bgKeep && running && document.hidden) { autoStoppedBy = 'hidden'; stop('页面切走了'); }
@@ -913,6 +946,9 @@ function bind() {
     document.addEventListener(ev, () => {
       markActivity();
       if (!running && autoStoppedBy === 'idle' && document.visibilityState === 'visible') {
+        autoStoppedBy = null; start();
+      }
+      if (!running && autoStoppedBy === 'away' && sysIdle.ok && effIdleMs() < 3000) {
         autoStoppedBy = null; start();
       }
       if (autoStoppedBy === 'pause30' && Date.now() > pauseUntil) { autoStoppedBy = null; start(); }
@@ -966,11 +1002,37 @@ function bind() {
     } else {
       $('epTimer').textContent = '—';
     }
-    // 闲置暂停
-    if (running && db.settings.idlePause && Date.now() - lastActivity > IDLE_MS) {
+    // 闲置暂停：只在页面可见时用页内键鼠判。
+    // 关键：页面在后台一个 mousemove 都收不到，拿它算“闲置”会把“你在别的窗口干活”当成“人走了”——
+    // 那就是之前“后台常驻几分钟摄像头自己关掉”的根因。后台要停就显式勾「离开电脑就停」（用整机键鼠判）。
+    if (running && db.settings.idlePause && !document.hidden && Date.now() - lastActivity > IDLE_MS) {
       autoStoppedBy = 'idle';
       stop('闲置暂停');
       toast('键鼠 5 分钟没动，摄像头已关闭。动一下鼠标自动恢复。', 3200);
+    }
+    // 离开电脑就停（可选，默认关）：看的是整台机器的键鼠，不是这个页面
+    if (running && db.settings.awayStop && sysIdle.ok && effIdleMs() > AWAY_MS) {
+      autoStoppedBy = 'away';
+      stop('你离开了');
+      toast('整台电脑的键鼠闲置 ' + Math.round(AWAY_MS / 60000) + ' 分钟，摄像头已关闭。动一下自动恢复。', 3200);
+    }
+    // 镜头里没人：降到省电档而不是停（否则你回来时它已经关了，而你根本不知道）
+    if (running && db.settings.autoLow) {
+      const nobody = !lastFaceSeen || performance.now() - lastFaceSeen > NOBODY_MS;
+      if (nobody !== lowByAway) {
+        lowByAway = nobody;
+        if (nobody) setStatus('镜头里没人 · 省电档', 'run');
+        else setStatus(document.hidden ? '后台检测中' : '哨兵中', 'run');
+      }
+    } else if (lowByAway) lowByAway = false;
+    // 人回来了就自己接上
+    if (!running && autoStoppedBy === 'idle' && !document.hidden && Date.now() - lastActivity < 3000) {
+      autoStoppedBy = null;
+      start();
+    }
+    if (!running && autoStoppedBy === 'away' && sysIdle.ok && effIdleMs() < 3000 && (!document.hidden || db.settings.bgKeep)) {
+      autoStoppedBy = null;
+      start();
     }
     // 30 分钟暂停到期
     if (!running && autoStoppedBy === 'pause30' && Date.now() > pauseUntil) {
@@ -999,9 +1061,14 @@ console.log('[nose-habit] ready, tier =', db.settings.tier);
 window.__nose = {
   touch: (on) => handleTouch(!!on, performance.now()),
   finalize: () => finalizeEpisode(),
-  state: () => ({ running, ticks: tickCount, hidden: document.hidden, handRuns: perf.handRuns, faceRuns: perf.faceRuns, handEmaFps: perf.handEmaFps, videoTime: video.currentTime, readyState: video.readyState, episodes: db.episodes.length, ep: ep ? { dur: ep.lastSeen - ep.start, counted: ep.counted, warned: ep.longWarned } : null, settings: { ...db.settings } }),
+  state: () => ({ running, ticks: tickCount, hidden: document.hidden, handRuns: perf.handRuns, faceRuns: perf.faceRuns, handEmaFps: perf.handEmaFps, videoTime: video.currentTime, readyState: video.readyState, episodes: db.episodes.length, idle: { sysOk: sysIdle.ok, eff: Math.round(effIdleMs()), hiddenLimit: null, by: autoStoppedBy, lowByAway, faceAgo: lastFaceSeen ? Math.round(performance.now() - lastFaceSeen) : -1 },
+    effTier: (db.settings.autoLow && lowByAway) ? 'saver' : db.settings.tier, ep: ep ? { dur: ep.lastSeen - ep.start, counted: ep.counted, warned: ep.longWarned } : null, settings: { ...db.settings } }),
   set: (patch) => { Object.assign(db.settings, patch); },
   toast: (t, o) => sysToast(t, o || { scenario: 'urgent' }),
   voice: (t) => sysVoice(t),
+  idle: (ms) => { sysIdle = { ms, at: Date.now(), ok: true }; },   // 注入假的系统逗留时长
+  pageIdle: (ms) => { lastActivity = Date.now() - ms; },            // 注入假的页内闲置时长
+  faceAgo: (ms) => { lastFaceSeen = performance.now() - ms; },      // 注入“上一次看到脸”的时间
+  idleReal: () => pollSysIdle(),
   data: () => JSON.parse(JSON.stringify(db)),
 };

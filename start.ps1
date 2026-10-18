@@ -25,6 +25,32 @@ try {
   [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null
 } catch { $script:winrtOk = $false }
 
+# 真实的系统逗留时间（GetLastInputInfo）：判断“人是不是离开电脑了”得看这台机器的键盘鼠标，
+# 而不是看页面收到的事件——页面在后台时一个事件都收不到，用页内事件算闲会把“切到别的窗口继续干活”误判成“人走了”。
+$script:idleOk = $false
+try {
+  if (-not ('Win32.LastInput' -as [type])) {
+    Add-Type -Namespace Win32 -Name LastInput -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)]
+public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+[DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+[DllImport("kernel32.dll")] public static extern uint GetTickCount();
+'@
+  }
+  $script:idleOk = $true
+} catch { $script:idleOk = $false }
+
+function Get-IdleMs {
+  if (-not $script:idleOk) { return -1 }
+  try {
+    $lii = New-Object Win32.LastInput+LASTINPUTINFO
+    $lii.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($lii)
+    if (-not [Win32.LastInput]::GetLastInputInfo([ref]$lii)) { return -1 }
+    $now = [Win32.LastInput]::GetTickCount()
+    return [int64]($now - $lii.dwTime)
+  } catch { return -1 }
+}
+
 $mime = @{
   '.html' = 'text/html; charset=utf-8'
   '.htm'  = 'text/html; charset=utf-8'
@@ -247,6 +273,13 @@ while ($true) {
       $bd = if ($null -ne $payload.body) { [string]$payload.body } else { '' }
       $r = Invoke-Webhook ([string]$payload.url) $ct $bd
       Send-Json $stream 200 $r
+      $client.Close(); continue
+    }
+
+    # 系统逗留时长：页面用它判断“人是不是真离开了”，避免后台时把自己人误判成离开了
+    if ($rawPath -eq '/api/idle') {
+      if ($method -ne 'GET') { Send-Error $stream 405 'Method Not Allowed'; $client.Close(); continue }
+      Send-Json $stream 200 @{ ok = $script:idleOk; idleMs = (Get-IdleMs) }
       $client.Close(); continue
     }
 

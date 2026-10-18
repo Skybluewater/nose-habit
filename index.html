@@ -195,12 +195,19 @@ input[type=text]{background:#151a1f; border:1px solid var(--line); color:inherit
             </label>
             <label class="chk"><input type="checkbox" id="chkSound" checked> 提示音</label>
             <label class="chk"><input type="checkbox" id="chkPreview" checked> 显示预览</label>
-            <label class="chk"><input type="checkbox" id="chkIdle" checked> 闲置自动停</label>
+            <label class="chk"><input type="checkbox" id="chkIdle" checked> 前台闲置就停</label>
+            <label class="chk"><input type="checkbox" id="chkAway"> 离开电脑就停（后台也算）</label>
+            <label class="chk"><input type="checkbox" id="chkAutoLow" checked> 没人在就降省电档</label>
             <label class="chk"><input type="checkbox" id="chkBg" checked> 切到别的窗口也继续</label>
             <label class="chk"><input type="checkbox" id="chkDebug"> 调试标注</label>
           </div>
           <div class="hint">
             浏览器只允许 <span class="kbd">127.0.0.1</span> 或 https 使用摄像头 —— 所以要用 start.bat 打开，别直接双击 index.html。
+          </div>
+          <div class="hint" id="idleHint">
+            默认<b>不会</b>因为你切到别的窗口就把摄像头关掉：前台 5 分钟没碰键鼠才停，停完动一下鼠标自己接上。
+            不想让摄像头灯一直亮着就勾「离开电脑就停」，它看的是<b>整台电脑</b>的键鼠（用 Windows 的 GetLastInputInfo）；
+            镜头里连续 2 分钟没人才会自动降到省电档（不停摄像头，你回来它还在）。
           </div>
           <div class="hint" id="bgHint">
             后台检测时浏览器会把帧率限到 ~1 帧/秒（长时间动作能抓，一两秒的会漏）。要全速后台，用 <span class="kbd">start.bat</span> 打开的专用窗口——它带了关掉限速的启动参数。
